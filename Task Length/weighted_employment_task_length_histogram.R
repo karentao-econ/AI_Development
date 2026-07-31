@@ -17,32 +17,25 @@ OUT_DIR <- file.path(ROOT, "01 histogram employment weighted figures")
 VARIANTS <- list(
   list(us = "acs",  scope = "all",    restrict = TRUE),
   list(us = "oews", scope = "formal", restrict = FALSE)
-  # acs / all / FALSE (all workers) dropped: 39% of India's weight landed on 42 task
-  # statements, so the weighted panel mostly described NCO's writing style rather than
-  # task length. Uncomment to rebuild it.
-  # , list(us = "acs", scope = "all", restrict = FALSE)
+  #oews data is only for the formal sector
 )
 
-# Every variant is drawn BOTH ways. The density reads better for presentation; the
-# histogram is the diagnostic one -- it shows weight concentrated on a single task
-# estimate as a hard spike, which a kernel smooths into an innocuous-looking mode.
+# histogram is better to spot issues with the method, like the sudden spikes due to certain occupations having a heavy weight distributed on few tasks
 PLOT_TYPES <- c("density", "histogram")
 
-# Workforce restriction, applied identically on BOTH sides so the two employment
-# weights describe the same population. Prime-age males have high and similar
-# participation in both countries, which removes most of the composition gap
-# Sex is coded 1 = male in PLFS b4q5 and in ACS sex alike.
+# Prime age workforce restriction
+# coded 1 = male in PLFS b4q5 and in ACS also coded 1 = male
 AGE_MIN <- 25; AGE_MAX <- 54; SEX_CODE <- 1
 AGE_FLOOR  <- 16
 
-C_IND  <- "#eb6834"   # dataviz categorical slot 8
-C_ONET <- "#2a78d6"   # dataviz categorical slot 1
+C_IND  <- "#69b3a2"   
+C_ONET <- "#404080"   
 INK2   <- "#52514e"; GRID <- "#e3e2dd"
 
 LAB_IND  <- "India raw Gemini, LLME1+"
 LAB_ONET <- "O*NET raw Gemini, LLME1+"
 
-# calendar hours (days = 24 h, weeks = 168 h), matching the stage-5 unit conversion
+# hour conversion
 hr_breaks <- log(c(1/3600, 1/60, 10/60, 1, 4, 8, 24, 168, 720))
 hr_labels <- c("1 sec", "1 min", "10 min", "1 hr", "4 hr", "8 hr", "1 day", "1 wk", "1 mo")
 
@@ -54,7 +47,7 @@ w_quantile <- function(x, w, probs) {
 w_mean <- function(x, w) sum(x * w) / sum(w)
 w_sd   <- function(x, w) sqrt(sum(w * (x - w_mean(x, w))^2) / sum(w))
 
-# PLFS stores several of these columns as haven_labelled over *character* data
+# to extract PLFS data, need num and chr conversion
 as_chr <- function(x) str_trim(as.character(haven::zap_labels(x)))
 as_num <- function(x) suppressWarnings(as.numeric(as_chr(x)))
 
@@ -66,8 +59,7 @@ ind <- read_csv(file.path(BASE, "tasklength_nco_llme1plus.csv"),
 stopifnot(!any(is.na(ind$duration)), all(is.finite(ind$duration)),
           min(ind$duration) > 0, max(ind$duration) <= 672 + 1e-9)
 
-# under 1 min rows: `duration` is a mean of 5 draws, so a row can average just below
-# the prompt's 1-min floor.
+# under 1 min rows
 n_sub <- sum(ind$duration < 1 / 60 - 1e-9)
 if (n_sub > 0)
   message(sprintf("India: %d row(s) average below the 1-min prompt floor (min %.3f min)",
@@ -116,12 +108,7 @@ oe <- read_csv(file.path(BASE, "onet_ai_exposure.csv"),
   distinct(occupation_code, task)
 stopifnot(nrow(distinct(onet, soc_code, task)) == nrow(onet))
 
-# Task-count denominator, captured BEFORE the LLME1+ filter: employment is spread
-# over an occupation's WHOLE task list, LLME0 tasks included. Only the LLME1+ share
-# of its employment-time then enters the histogram. Dividing by the surviving tasks
-# instead would push an occupation's entire employment onto whatever few tasks
-# happened to survive -- which is what produced the 26-min agricultural-labourer
-# spike (13.6M workers over 2 surviving tasks of 10).
+# employment is divided over total tasks in an occupation, including llme0 tasks. 
 onet_all_n <- onet %>%
   mutate(soc6 = str_remove(str_sub(soc_code, 1, 7), "-")) %>%
   count(soc6, name = "n_tasks_all")
@@ -134,16 +121,14 @@ message(sprintf("India LLME1+ : %s tasks, %s NCO codes",
                 comma(nrow(ind)), comma(n_distinct(ind$soc_code))))
 
 
-# PLFS Jan-Dec 2022 first visit, NCO 3-digit
+# PLFS Jan-Dec 2022, NCO 3-digit
 #      Final weight = MULT/(NO_QTR*100) if NSS = NSC
 #                   = MULT/(NO_QTR*200) otherwise
-#    IMF uses 11,12, 21, 31, 41,42, 51, 61, 62, 71 and 72
+#    IMF uses 11,12, 21, 31, 41,42, 51, 61, 62, 71 and 72 to code employment
 plfs <- read_dta(file.path(DL, "PLFS_Data_2022-22_STATA/cperv1.dta"),
                  col_select = c(b5pt1q6_cperv1, b5pt1q3_cperv1, b4q5_cperv1, b4q6_perv1,
                                 mult_cperv1, nss_cperv1, nsc_cperv1, no_qtr_cperv1))
-
-# ACS is read once here rather than per variant: the file is ~700 MB and the raw
-# columns are identical across variants; only the filtering differs.
+#load ACS data from IPUMS, included perwt, age, sex, empstat, occsoc variables.
 acs_raw <- if (any(sapply(VARIANTS, function(v) v$us == "acs")))
   read_dta(file.path(DL, "acs 2022.dta"),
            col_select = c(perwt, age, sex, empstat, empstatd, occsoc)) else NULL
@@ -154,7 +139,7 @@ run_variant <- function(US_SOURCE, IND_SCOPE, RESTRICT) {
     stop("OEWS has no age or sex fields; restrict must be FALSE when us='oews'")
 
   IND_STATUS   <- if (IND_SCOPE == "formal") "31" else
-                    c("11", "12", "21", "31", "41", "51")
+                    c("11","12", "21", "31", "41","42","51", "61", "62", "71", "72")
   RESTRICT_LAB <- if (RESTRICT) sprintf("prime-age men (%d-%d)", AGE_MIN, AGE_MAX)
                   else "all workers"
   SUFFIX  <- paste0(if (US_SOURCE == "oews") "oews_" else "",
@@ -175,10 +160,8 @@ run_variant <- function(US_SOURCE, IND_SCOPE, RESTRICT) {
                ifelse(as_chr(nss_cperv1) == as_chr(nsc_cperv1), 100, 200) /
                as_num(no_qtr_cperv1)
     ) %>%
-    # "formal" = regular salaried only (31); casual wage labour (41/51) is wage work
-    # but overwhelmingly informal, and 11/12/21 are self-employed or unpaid family.
-    # AGE_FLOOR 16 matches ACS's EMPSTAT universe and OEWS's de facto payroll floor;
-    # PLFS itself has no age floor.
+    # "formal" means regular salaried only (31)
+    # restrict age to 16+ in india to be consistent with oews
     filter(status %in% IND_STATUS, age >= AGE_FLOOR,
            !RESTRICT | (sex == SEX_CODE & age >= AGE_MIN & age <= AGE_MAX),
            !is.na(nco3), nco3 != "", nco3 != "NA", !is.na(w)) %>%
@@ -189,8 +172,9 @@ run_variant <- function(US_SOURCE, IND_SCOPE, RESTRICT) {
                   sum(emp_ind$emp) / 1e6, nrow(emp_ind)))
 
   if (US_SOURCE == "acs") {
-    # US EMPLOYMENT ACS 2022, civilian employed, OCCSOC (SOC-2018)
-    # EMPSTAT 1 = employed
+    # US EMPLOYMENT ACS 2022, civilian employed
+    # the occupation code is OCCSOC (SOC-2018)
+    # restrict to EMPSTAT 1 = employed to filter employed
     emp_acs <- acs %>%
       transmute(perwt    = as_num(perwt),
                 age      = as_num(age),
@@ -206,7 +190,7 @@ run_variant <- function(US_SOURCE, IND_SCOPE, RESTRICT) {
     message(sprintf("US employment: %.1fM across %d OCCSOC codes",
                     sum(emp_acs$emp) / 1e6, nrow(emp_acs)))
 
-    # ACS OCCSOC -> O*NET SOC-2018 6-digit 
+    # ACS OCCSOC needs to be converted to O*NET SOC-2018 6-digit. as some digits are missing for confidentiality reasons 
     soc_h <- read_excel(file.path(DL, "soc_structure_2018.xlsx"), skip = 8,
                         col_names = c("major", "minor", "broad", "detailed", "title")) %>%
       mutate(across(major:detailed, ~ str_remove(str_trim(as.character(.x)), "-"))) %>%
@@ -214,21 +198,21 @@ run_variant <- function(US_SOURCE, IND_SCOPE, RESTRICT) {
       filter(str_detect(detailed, "^\\d{6}$")) %>%
       select(detailed, broad, minor, major, title)
 
-    stopifnot(nrow(soc_h) == 867,                                   # SOC-2018 detailed count
+    stopifnot(nrow(soc_h) == 867,                                   # SOC-2018 detailed count, needs to complete checking all
               !any(is.na(soc_h$broad)), !any(is.na(soc_h$minor)), !any(is.na(soc_h$major)),
               all(str_sub(soc_h$major, 1, 2) == str_sub(soc_h$detailed, 1, 2)),
               all(str_sub(soc_h$minor, 1, 3) == str_sub(soc_h$detailed, 1, 3)),
               all(str_sub(soc_h$broad, 1, 3) == str_sub(soc_h$detailed, 1, 3)))
 
-    onet      <- onet %>% mutate(soc6 = str_remove(str_sub(soc_code, 1, 7), "-"))
+    onet      <- onet %>% mutate(soc6 = str_remove(str_sub(soc_code, 1, 7), "-")) #converting code to soc6, need to get rid of hyphen
     onet_socs <- sort(unique(onet$soc6))
     h         <- soc_h %>% filter(detailed %in% onet_socs)
-    by_broad  <- split(h$detailed, h$broad)
-    by_minor  <- split(h$detailed, h$minor)
-    by_major  <- split(h$detailed, h$major)
+    by_broad  <- split(h$detailed, h$broad) #broad soc
+    by_minor  <- split(h$detailed, h$minor) #minor soc group
+    by_major  <- split(h$detailed, h$major)#major soc group
 
     match_socs <- function(code) {
-      if (str_detect(code, "[XY]"))                        # IPUMS wildcard cell
+      if (str_detect(code, "[XY]"))                        # IPUMS hidden digits
         return(onet_socs[str_detect(onet_socs,
                  paste0("^", str_replace_all(code, "[XY]", "."), "$"))])
       if (code %in% onet_socs)        return(code)
@@ -247,7 +231,7 @@ run_variant <- function(US_SOURCE, IND_SCOPE, RESTRICT) {
 
     emp_us <- mapped %>%
       filter(n_m > 0) %>%
-      mutate(emp = emp / n_m) %>%          
+      mutate(emp = emp / n_m) %>%          #as i map the hidden codes, i divide employment by no. of possible codes to get weight
       unnest(soc6) %>%
       group_by(soc6) %>% summarise(emp = sum(emp), .groups = "drop")
 
@@ -257,11 +241,8 @@ run_variant <- function(US_SOURCE, IND_SCOPE, RESTRICT) {
     stopifnot(abs(sum(emp_us$emp) + unassignable - sum(emp_acs$emp)) < 1)   # reconciles
 
   } else {
-    # BLS OEWS May 2022, national. Already keyed on detailed SOC-2018, so it drops
-    # straight in: no wildcards, no broad/minor expansion, no 1/n splitting. 0% of US
-    # employment is imputed here, against 37% on the ACS path. Cost: 27 O*NET codes
-    # have no OEWS detailed row (OEWS publishes only their parent broad group) and
-    # drop out, taking 485 tasks with them from BOTH panels.
+    # BLS OEWS May 2022, national is based on SOC-2018, no need to split
+    #however, 27 O*NET codes have no OEWS detailed row (OEWS publishes only their parent broad group)
     emp_us <- read_csv(file.path(BASE, "oews_2022_national_soc_employment.csv"),
                        col_types = cols(soc6 = col_character(), .default = col_guess())) %>%
       transmute(soc6, emp = as.numeric(tot_emp)) %>%
@@ -276,7 +257,8 @@ run_variant <- function(US_SOURCE, IND_SCOPE, RESTRICT) {
                     length(setdiff(onet_socs, emp_us$soc6))))
   }
 
-  # India denominators, both counted over ALL tasks (LLME0 included):
+  # to calculate fractional weighted employment, i divide by the no. of 8 digit nco occupations inside the 3 digit group
+  #and then again by no. of tasks
   #   n_occ8      = 8-digit NCO occupations inside the 3-digit group
   #   n_tasks_occ = that occupation's own total task count
   # tasklength_nco_llme1plus.csv is already LLME1+-filtered, so the full 14,304-task
@@ -288,11 +270,7 @@ run_variant <- function(US_SOURCE, IND_SCOPE, RESTRICT) {
     count(nco3, occupation_code, name = "n_tasks_occ") %>%
     group_by(nco3) %>% mutate(n_occ8 = n()) %>% ungroup()
 
-  # Two-stage division, matching the US side (where emp_us is already per SOC code
-  # before the per-task split). PLFS stops at 3-digit NCO, so the group's employment
-  # is first spread evenly over its 8-digit occupations, then over each occupation's
-  # whole task list. Dividing straight by the group's task count instead would hand
-  # each occupation a share proportional to how verbosely NCO describes it.
+  # now, i input the weighted value where w = emp / n_occ8 / n_tasks_occ
   ind_w <- ind %>%
     mutate(nco3 = str_sub(str_remove(soc_code, fixed(".")), 1, 3)) %>%
     left_join(emp_ind, by = "nco3") %>%
@@ -300,7 +278,7 @@ run_variant <- function(US_SOURCE, IND_SCOPE, RESTRICT) {
     mutate(w = emp / n_occ8 / n_tasks_occ) %>%
     filter(!is.na(w), w > 0) %>%
     transmute(source = LAB_IND, log_dur, w)
-
+ # for onet, task weight is just emp / no. of tasks as we already divided employment by no. of mapped codes
   onet_w <- onet %>%
     left_join(emp_us, by = "soc6") %>%
     left_join(onet_all_n, by = "soc6") %>%
@@ -342,20 +320,12 @@ run_variant <- function(US_SOURCE, IND_SCOPE, RESTRICT) {
 
   med <- stats_tbl %>% select(panel, source, median, median_h)
 
-  # Full data range, no percentile trimming. every task is shown. (.3 is cosmetic
-  # padding so the outermost bars are not flush against the panel edge.)
+  # Full data range
   XLIM <- range(plot_dat$log_dur) + c(-.3, .3)
 
-  # Weighted kernel density (matches gemini_hours_density_llme1plus.png). stat_density
-  # normalises the weights within each group, so the two panels differ only in whether
-  # wt is the employment weight or 1.
-  #
-  # The y-limit is read back off the built plot rather than guessed: geom_density picks
-  # its own bandwidth, so there is no bin width to compute a maximum from.
-  # Density bandwidth is chosen by ggplot, so there is no bin width to derive a
-  # y-limit from: build the layer and read the curve heights back off it.
-  BOUNDS <- c(log(1/60), log(672))   # the prompt's floor and ceiling -- a kernel
-                                     # would otherwise leak past both ends
+  # Weighted kernel density for density graph
+  
+  BOUNDS <- c(log(1/60), log(672))   
   bin_breaks <- seq(XLIM[1], XLIM[2], length.out = 69)
 
   for (PLOT_TYPE in PLOT_TYPES) {
