@@ -376,7 +376,7 @@ for (lvl in c("isco2", "isco3")) {
       scale_x_continuous(breaks = log(c(1/60, 1/6, 1, 4, 8, 24, 168, 720)),
                          labels = c("1 min", "10 min", "1 hr", "4 hr", "8 hr",
                                     "1 day", "1 wk", "1 mo")) +
-      labs(title = sprintf("LLME1+ %s task length by ISCO-08 %s — %s",
+      labs(title = sprintf("LLME1+ %s task length by ISCO-08 %s. %s",
                            ms$lab, nm, ord_lab),
            subtitle = sprintf("%s vs O*NET, raw uncalibrated Gemini (%s of hours, natural log)",
                               DEV$label, ms$lab),
@@ -400,7 +400,7 @@ for (lvl in c("isco2", "isco3")) {
       scale_fill_manual(values = c("TRUE" = C_POS, "FALSE" = C_NEG), guide = "none") +
       labs(title = sprintf("%s minus O*NET, ISCO-08 %s (LLME1+, %s, raw Gemini both sides)",
                            DEV$label, nm, ms$lab),
-           subtitle = sprintf("positive = %s estimates run longer", DEV$label),
+           subtitle = sprintf("india task length is longer if the gap is positive", DEV$label),
            x = "gap (ln hours)", y = NULL) +
       theme_minimal(base_size = 9) +
       theme(panel.grid.minor = element_blank(), panel.grid.major.y = element_blank(),
@@ -412,11 +412,11 @@ for (lvl in c("isco2", "isco3")) {
 
   # ordering
   for (ms in MEANS) {
-    dot_plot(g %>% arrange(desc(code)),          "in ISCO code order",
+    dot_plot(g %>% arrange(desc(code)),          "ISCO code order",
              sprintf("isco%s_dots_by_isco%s.png", dg, ms$sfx), ms)
-    dot_plot(g %>% arrange(.data[[ms$onet]]),    "longest US tasks first",
+    dot_plot(g %>% arrange(.data[[ms$onet]]),    "Longest US tasks first",
              sprintf("isco%s_dots_by_us%s.png", dg, ms$sfx), ms)
-    dot_plot(g %>% arrange(.data[[ms$dev]]),     sprintf("longest %s tasks first", DEV$label), #longest india tasks first
+    dot_plot(g %>% arrange(.data[[ms$dev]]),     sprintf("Longest %s tasks first", DEV$label), #longest india tasks first
              sprintf("isco%s_dots_by_%s%s.png", dg, DEV_COUNTRY, ms$sfx), ms)
     gap_plot(g, ms)
   }
