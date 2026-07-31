@@ -11,10 +11,10 @@ DEV_COUNTRY <- "india"          #I can replicate this for other countries too, l
 DEV_SPEC <- list(
   india = list(
     label      = "India",
-    file       = file.path(BASE, "tasklength_nco_llme1plus.csv"),
-    isco4_from = function(x) str_sub(str_remove_all(x, "[^0-9]"), 1, 4),
+    file       = file.path(BASE, "tasklength_nco_llme1plus.csv"), #this is the estimated task length database
+    isco4_from = function(x) str_sub(str_remove_all(x, "[^0-9]"), 1, 4), #the first 4 digits of NCO are ISCO-08
     exposure   = NULL
-    # this file is only LLME1+ that went through the gemini predictions
+    # this file is only LLME1+ that went through the gemini predictions, not all tasks, I am only comparing LLME1+ here
   )
 )
 DEV <- DEV_SPEC[[DEV_COUNTRY]]
@@ -24,13 +24,13 @@ dir.create(OUT, showWarnings = FALSE)
 C_DEV <- "#eb6834"; C_ONET <- "#2a78d6"; C_POS <- "#e34948"; C_NEG <- "#2a78d6"
 GRID  <- "#e3e2dd"; INK2 <- "#52514e"
 
+#to produce the .txt report at the end. a bunch of functions to print messages keeping track of what is left:
 say <- local({ buf <- character(0)
 function(fmt = NULL, ...) {
   if (is.null(fmt)) return(buf)
   s <- if (length(list(...))) sprintf(fmt, ...) else fmt
   cat(s, "\n"); buf <<- c(buf, s); invisible(NULL)
 }})
-
 audit <- local({ rows <- list()
 function(step = NULL, rows_in = NA, rows_out = NA, note = "") {
   if (is.null(step)) return(bind_rows(rows))
@@ -43,30 +43,30 @@ function(step = NULL, rows_in = NA, rows_out = NA, note = "") {
 }})
 
 say(strrep("=", 78))
-say("LLME1+ AVERAGE TASK LENGTH BY ISCO-08 SUB-MAJOR (2-DIGIT) AND MINOR (3-DIGIT)")
+say("LLME1+ AVERAGE TASK LENGTH BY ISCO-08 SUB-MAJOR (2-DIGIT) AND MINOR (3-DIGIT)") 
 say("  developing side : %s, raw Gemini (`duration`)", DEV$label)
 say("  O*NET side      : raw Gemini (`gemini_hours` from rawonet.xlsx)")
 say(strrep("=", 78))
 
-# nco
+# Here, I define the function that reads the NCO file
 load_dev <- function(spec) {
   d <- read_csv(spec$file, col_types = cols(soc_code = col_character(),
                                             .default = col_guess()))
 
-  # hard stop on 0 or negative or n/a for duration, as taking log can lead to issue
+  # this ends on 0 or negative or n/a for duration, as taking log can lead to issue
   stopifnot(!any(is.na(d$duration)), all(is.finite(d$duration)),
             min(d$duration) > 0, max(d$duration) <= 672 + 1e-9)
 
-  # under 1 min rows
+  # highlights the under 1 min task lengths for the report
   n_sub <- sum(d$duration < 1 / 60 - 1e-9)
   if (n_sub > 0)
     say("  note: %d row(s) average below the 1-min prompt floor (min %.3f min)",
         n_sub, min(d$duration) * 60)
 
-  # ln is always recomputed from the raw gemini `duration` at the end of this function.
+  # just in case, I delete log_dur so ln is always recomputed from the raw gemini `duration` at the end of this function.
   d <- d %>% select(-any_of(c("log_dur", "est_log_dur")))
 
-  # Put the rows in estimation run order if the file records it explicitly
+  # Put the rows in estimation run order 
   if (!is.null(spec$order_by)) {
     stopifnot(spec$order_by %in% names(d))
     d <- d %>% arrange(.data[[spec$order_by]])
@@ -94,18 +94,18 @@ load_dev <- function(spec) {
   } else {
     say("already an LLME1+ pool")
   }
-  d %>% mutate(isco4 = spec$isco4_from(soc_code),
-               isco3 = str_sub(isco4, 1, 3),
-               isco2 = str_sub(isco4, 1, 2),
-               ln_dur = log(duration))                # recompute
+  d %>% mutate(isco4 = spec$isco4_from(soc_code), #4 digit
+               isco3 = str_sub(isco4, 1, 3), #3 digit
+               isco2 = str_sub(isco4, 1, 2), #2 digit
+               ln_dur = log(duration))                # compute the natural log here, just to be safe
 }
 
-dev <- load_dev(DEV)
+dev <- load_dev(DEV) #here I call the function to load data from India
 say("%s: %s LLME1+ tasks, %d ISCO-4, %d ISCO-3, %d ISCO-2 groups", DEV$label,
     format(nrow(dev), big.mark = ","), n_distinct(dev$isco4),
     n_distinct(dev$isco3), n_distinct(dev$isco2))
 
-# onet
+# load onet data from rawonet.xlsx, which I got from Lucy. it has the raw gemini counts, calibrated counts and survey data
 onet <- read_excel(file.path(BASE, "rawonet.xlsx"), sheet = 1,
                    col_types = c("text", "text", "text",
                                  "numeric", "numeric", "numeric", "numeric")) %>%
@@ -115,26 +115,26 @@ stopifnot(nrow(distinct(onet, soc_code, task)) == nrow(onet),
           abs(min(onet$gemini_hours) - 1 / 60) < 1e-9,
           abs(max(onet$gemini_hours) - 672) < 1e-9)
 
-# only use the tasks with task lengths (onet 29.2)
+# only use the tasks with task lengths calculated (onet 29.2), rawonet has some more tasks (lucy somehow ran the lengths on an older version of o*net, 29.2)
 lengths_csv <- read_csv(file.path(BASE, "all_onet_task_lengths.csv"),
                         col_types = cols(.default = col_guess())) %>%
   transmute(task_id = `Task ID`, soc_code = str_trim(`O*NET-SOC Code`),
-            task = str_trim(Task), Title, legacy_log_dur = log_dur)
+            task = str_trim(Task), Title)
 n0 <- nrow(onet)
-onet <- onet %>% inner_join(lengths_csv, by = c("soc_code", "task"))
+onet <- onet %>% inner_join(lengths_csv, by = c("soc_code", "task")) #join the length to the task
 audit("onet: pin to all_onet_task_lengths", n0, nrow(onet), "key = (soc_code, task)")
 stopifnot(nrow(onet) == 18796, !any(duplicated(onet$task_id)))
 
 # LLME1+ 
-oe <- read_csv(file.path(BASE, "onet_ai_exposure.csv"),
+oe <- read_csv(file.path(BASE, "onet_ai_exposure.csv"), #this is the file with gemini calculated AI exposure metrics
                col_types = cols(.default = col_character())) %>%
   mutate(llme_n = as.integer(str_extract(llme, "\\d$"))) %>%
   filter(llme_n >= 1) %>% distinct(occupation_code, task)
 n1 <- nrow(onet)
 onet <- onet %>%
   semi_join(oe, by = c("soc_code" = "occupation_code", "task" = "task")) %>%
-  mutate(ln_raw = log(gemini_hours),                  
-         soc18  = str_remove(str_sub(soc_code, 1, 7), "-"))
+  mutate(ln_raw = log(gemini_hours),   #calculate ln of duration               
+         soc18  = str_remove(str_sub(soc_code, 1, 7), "-")) #take out the soc_code
 audit("onet: keep LLME1+", n1, nrow(onet), "dropped rows are all LLME0")
 stopifnot(nrow(onet) == 14012)
 
@@ -142,69 +142,160 @@ say("O*NET: %s LLME1+ tasks, %d SOC-2018 codes; raw mean %.4f ln, sd %.4f, media
     format(nrow(onet), big.mark = ","), n_distinct(onet$soc18),
     mean(onet$ln_raw), sd(onet$ln_raw), median(onet$gemini_hours))
 
-# crosswalk O*NET-SOC -> SOC-2010 -> ISCO-08
-# BLS sheets carry a few title//contact rows above the real header
+isco_soc_xls <- file.path(BASE, "isco_soc_crosswalk.xls")
+#find header row of bls xlsx
 hdr_row <- function(path, needle, sheet = 1, n_max = 20) {
-  probe <- read_excel(path, sheet = sheet, col_names = FALSE, n_max = n_max,
-                      .name_repair = "minimal")
-  i <- which(apply(probe, 1, function(r) any(grepl(needle, r, fixed = TRUE))))[1]
+  probe <- read_excel(
+    path,
+    sheet = sheet,
+    col_names = FALSE,
+    n_max = n_max,
+    .name_repair = "minimal"
+  )
+  
+  i <- which(apply(probe, 1, function(r)
+    any(grepl(needle, r, fixed = TRUE))))[1]
+  
   if (is.na(i))
-    stop(sprintf("no header row containing '%s' in the first %d rows of %s",
-                 needle, n_max, basename(path)))
+    stop(sprintf(
+      "No header row containing '%s' found in first %d rows of %s",
+      needle, n_max, basename(path)
+    ))
+  
   i
 }
 
-isco_soc_xls <- file.path(BASE, "isco_soc_crosswalk.xls")
-bls_hdr <- hdr_row(isco_soc_xls, "2010 SOC Code",
-                   sheet = "2010 SOC to ISCO-08", n_max = 12)
-soc_isco_bls <- read_excel(isco_soc_xls,
-                           sheet = "2010 SOC to ISCO-08", skip = bls_hdr - 1,
-                           col_types = "text") %>%
-  transmute(soc10 = str_remove(str_trim(`2010 SOC Code`), "-"),
-            isco4 = str_trim(`ISCO-08 Code`)) %>%
-  filter(str_detect(soc10, "^\\d{6}$"), str_detect(isco4, "^\\d{4}$")) %>% distinct()
+bls_hdr <- hdr_row(
+  isco_soc_xls,
+  "2010 SOC Code",
+  sheet = "2010 SOC to ISCO-08",
+  n_max = 12
+)
 
-soc_isco <- bind_rows(
-  as.data.frame(iscoCrosswalks::soc10_isco08) %>%
-    transmute(soc10 = as.character(soc10), isco4 = as.character(isco08)),
-  soc_isco_bls) %>%
+soc_isco <- read_excel(
+  isco_soc_xls,
+  sheet = "2010 SOC to ISCO-08",
+  skip = bls_hdr - 1,
+  col_types = "text"
+) %>%
+  transmute(
+    soc10 = str_remove(str_trim(`2010 SOC Code`), "-"),
+    isco4 = str_trim(`ISCO-08 Code`)
+  ) %>%
+  filter(
+    str_detect(soc10, "^\\d{6}$"),
+    str_detect(isco4, "^\\d{4}$")
+  ) %>%
   distinct()
-say("SOC-2010 -> ISCO-08: %d links over %d SOC codes (BLS xls %d + iscoCrosswalks, unioned)",
-    nrow(soc_isco), n_distinct(soc_isco$soc10), n_distinct(soc_isco_bls$soc10))
+
+say(
+  "BLS SOC-2010 -> ISCO-08: %d links across %d SOC codes",
+  nrow(soc_isco),
+  n_distinct(soc_isco$soc10)
+)
+#soc 2010 to isco 2008
 
 to_isco <- function(d) {
-  d %>% group_by(soc) %>% mutate(w1 = 1 / n()) %>% ungroup() %>%
-    inner_join(soc_isco, by = "soc10", relationship = "many-to-many") %>%
-    group_by(soc, soc10) %>% mutate(w2 = 1 / n()) %>% ungroup() %>%
-    group_by(soc, isco4) %>% summarise(w = sum(w1 * w2), .groups = "drop")
+  
+  d %>%
+    group_by(soc) %>%
+    mutate(w1 = 1 / n()) %>%
+    ungroup() %>%
+    
+    inner_join(
+      soc_isco,
+      by = "soc10",
+      relationship = "many-to-many"
+    ) %>%
+    
+    group_by(soc10) %>%
+    mutate(w2 = 1 / n()) %>%
+    ungroup() %>%
+    
+    group_by(soc, isco4) %>%
+    summarise(
+      w = sum(w1 * w2),
+      .groups = "drop"
+    )
 }
 
 
-# BLS 2010<->2018 table
 soc_1018_xlsx <- file.path(BASE, "soc_2010_to_2018_crosswalk.xlsx")
-hdr <- hdr_row(soc_1018_xlsx, "2018 SOC Code")
-link <- read_excel(soc_1018_xlsx, skip = hdr - 1) %>%
-  transmute(soc   = str_remove(`2018 SOC Code`, "-"),
-            soc10 = str_remove(`2010 SOC Code`, "-")) %>%
-  filter(!is.na(soc), !is.na(soc10)) %>% distinct() %>% to_isco() %>%
+
+hdr <- hdr_row(
+  soc_1018_xlsx,
+  "2018 SOC Code"
+)
+#soc 2018 to 2010
+link <- read_excel(
+  soc_1018_xlsx,
+  skip = hdr - 1
+) %>%
+  transmute(
+    soc   = str_remove(`2018 SOC Code`, "-"),
+    soc10 = str_remove(`2010 SOC Code`, "-")
+  ) %>%
+  filter(
+    !is.na(soc),
+    !is.na(soc10)
+  ) %>%
+  distinct() %>%
+  to_isco() %>%
   rename(soc18 = soc)
 
-chk <- link %>% group_by(soc18) %>% summarise(tot = sum(w), .groups = "drop")
-say("Crosswalk (BLS 2018 table only): %d SOC codes to ISCO-08. Weights sum to 1 for %d/%d",
-    nrow(chk), sum(abs(chk$tot - 1) < 1e-9), nrow(chk))
 
+chk <- link %>%
+  group_by(soc18) %>%
+  summarise(
+    tot = sum(w),
+    .groups = "drop"
+  )
 
-onet_l <- onet %>% inner_join(link, by = "soc18", relationship = "many-to-many") %>%
-  mutate(isco3 = str_sub(isco4, 1, 3), isco2 = str_sub(isco4, 1, 2))
-unmatched <- onet %>% anti_join(link, by = "soc18")
-audit("onet: place on ISCO", nrow(onet), n_distinct(onet_l$task_id),
-      sprintf("%d SOC codes unmatched", n_distinct(unmatched$soc18)))
-write_csv(unmatched %>% count(soc18, Title, name = "n_tasks"),
-          file.path(OUT, "onet_soc_unmatched_to_isco.csv"))
-write_csv(audit(), file.path(OUT, "join_audit.csv"))
+say(
+  "SOC18 -> ISCO: %d SOC codes. Weights sum to 1 for %d/%d codes.",
+  nrow(chk),
+  sum(abs(chk$tot - 1) < 1e-9),
+  nrow(chk)
+)
+#join onet with the isco 3 digit and 2 digit code
+onet_l <- onet %>%
+  inner_join(
+    link,
+    by = "soc18",
+    relationship = "many-to-many"
+  ) %>%
+  mutate(
+    isco3 = str_sub(isco4, 1, 3),
+    isco2 = str_sub(isco4, 1, 2)
+  )
 
-labs <- as.data.frame(iscoCrosswalks::isco) %>%
-  transmute(code = as.character(code), label = as.character(preferredLabel))
+unmatched <- onet %>%
+  anti_join(link, by = "soc18")
+
+audit(
+  "onet: place on ISCO",
+  nrow(onet),
+  n_distinct(onet_l$task_id),
+  sprintf("%d SOC codes unmatched",
+          n_distinct(unmatched$soc18))
+)
+
+write_csv(
+  unmatched %>%
+    count(soc18, Title, name = "n_tasks"),
+  file.path(OUT, "onet_soc_unmatched_to_isco.csv")
+)
+
+write_csv(
+  audit(),
+  file.path(OUT, "join_audit.csv")
+)
+
+labs <- as.data.frame(iscoCrosswalks::isco) %>% #get the isco labels from the R package
+  transmute(
+    code = as.character(code),
+    label = as.character(preferredLabel)
+  )
 
 compare_level <- function(lvl) {
   d_g <- dev %>% group_by(code = .data[[lvl]]) %>%
@@ -225,15 +316,13 @@ compare_level <- function(lvl) {
 }
 
 
-# geometric: mean of log hours
-# arithmetic: log of mean of hours
 MEANS <- list(
-  list(dev = "dev_raw",  onet = "onet_raw",  gap = "gap",
+  list(dev = "dev_raw",  onet = "onet_raw",  gap = "gap", #geometric mean duration gap
        lab = "geometric mean",  sfx = ""),
-  list(dev = "dev_amln", onet = "onet_amln", gap = "gap_am",
+  list(dev = "dev_amln", onet = "onet_amln", gap = "gap_am", #arithmetic mean duration gap 
        lab = "arithmetic mean", sfx = "_am")
 )
-
+#plot for each isco level
 for (lvl in c("isco2", "isco3")) {
   g  <- compare_level(lvl)
   dg <- substr(lvl, 5, 5)
@@ -283,7 +372,7 @@ for (lvl in c("isco2", "isco3")) {
                           breaks = c("O*NET raw Gemini",
                                      sprintf("%s raw Gemini", DEV$label)), name = NULL) +
       scale_y_discrete(limits = levels(pd$lab), drop = FALSE) +
-      # Calendar hours
+      # x axis is time
       scale_x_continuous(breaks = log(c(1/60, 1/6, 1, 4, 8, 24, 168, 720)),
                          labels = c("1 min", "10 min", "1 hr", "4 hr", "8 hr",
                                     "1 day", "1 wk", "1 mo")) +
@@ -321,14 +410,13 @@ for (lvl in c("isco2", "isco3")) {
            limitsize = FALSE)
   }
 
-  # ggplot draws the first factor level at the BOTTOM, so descending arrange() puts
-  # the largest value at the top of the chart.
+  # ordering
   for (ms in MEANS) {
     dot_plot(g %>% arrange(desc(code)),          "in ISCO code order",
              sprintf("isco%s_dots_by_isco%s.png", dg, ms$sfx), ms)
     dot_plot(g %>% arrange(.data[[ms$onet]]),    "longest US tasks first",
              sprintf("isco%s_dots_by_us%s.png", dg, ms$sfx), ms)
-    dot_plot(g %>% arrange(.data[[ms$dev]]),     sprintf("longest %s tasks first", DEV$label),
+    dot_plot(g %>% arrange(.data[[ms$dev]]),     sprintf("longest %s tasks first", DEV$label), #longest india tasks first
              sprintf("isco%s_dots_by_%s%s.png", dg, DEV_COUNTRY, ms$sfx), ms)
     gap_plot(g, ms)
   }
